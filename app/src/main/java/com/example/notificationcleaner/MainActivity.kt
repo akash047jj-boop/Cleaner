@@ -2,26 +2,26 @@ package com.example.notificationcleaner
 
 import android.Manifest
 import android.app.Activity
+import android.app.TimePickerDialog
 import android.content.Intent
-import android.content.SharedPreferences
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
-import androidx.core.app.ActivityCompat
+import android.view.View
+import android.widget.*
 
 class MainActivity : Activity() {
 
-    private lateinit var preferences: SharedPreferences
-    private lateinit var statusText: TextView
-    private lateinit var startStopButton: Button
-
     private val tiffanyBlue = Color.rgb(10, 186, 181)
+    private val black = Color.BLACK
+    private val white = Color.WHITE
+
+    private lateinit var preferences: android.content.SharedPreferences
+    private lateinit var appContainer: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -43,170 +43,387 @@ class MainActivity : Activity() {
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            ActivityCompat.requestPermissions(
-                this,
+            requestPermissions(
                 arrayOf(Manifest.permission.POST_NOTIFICATIONS),
                 100
             )
         }
-
-        updateScreen()
     }
 
     private fun createScreen() {
 
-        val background = Color.BLACK
-
-        val layout = LinearLayout(this).apply {
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(40, 60, 40, 30)
-            setBackgroundColor(background)
+            setBackgroundColor(black)
+            setPadding(30, 40, 30, 20)
         }
 
         val title = TextView(this).apply {
             text = "Notification Cleaner"
-            textSize = 28f
+            textSize = 27f
+            gravity = Gravity.CENTER
             setTextColor(tiffanyBlue)
-            gravity = Gravity.CENTER
         }
 
-        val description = TextView(this).apply {
-            text = "Automatically clears notifications from the notification bar except WhatsApp."
-            textSize = 16f
-            setTextColor(Color.LTGRAY)
-            gravity = Gravity.CENTER
-            setPadding(0, 30, 0, 30)
-        }
+        root.addView(title)
 
-        statusText = TextView(this).apply {
-            textSize = 20f
-            gravity = Gravity.CENTER
-            setPadding(0, 20, 0, 20)
-        }
-
-        startStopButton = Button(this).apply {
-            textSize = 18f
-            setTextColor(Color.BLACK)
+        val startStop = Button(this).apply {
+            text = if (isRunning()) "STOP" else "START"
+            setTextColor(black)
             setBackgroundColor(tiffanyBlue)
 
             setOnClickListener {
-
-                val currentlyRunning =
-                    preferences.getBoolean("running", true)
+                val newState = !isRunning()
 
                 preferences.edit()
-                    .putBoolean("running", !currentlyRunning)
+                    .putBoolean("running", newState)
                     .apply()
 
-                updateScreen()
-            }
-        }
+                text = if (newState) "STOP" else "START"
 
-        val accessButton = Button(this).apply {
-            text = "Notification Access"
-            textSize = 16f
-            setTextColor(Color.BLACK)
-            setBackgroundColor(tiffanyBlue)
-
-            setOnClickListener {
-                startActivity(
-                    Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                NotificationHelper.showStatus(
+                    this@MainActivity,
+                    newState
                 )
             }
         }
 
-        val spacer = LinearLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                1,
+        root.addView(
+            startStop,
+            LinearLayout.LayoutParams(
+                -1,
+                -2
+            )
+        )
+
+        val accessButton = Button(this).apply {
+            text = "Notification Access"
+            setTextColor(black)
+            setBackgroundColor(tiffanyBlue)
+
+            setOnClickListener {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS
+                    )
+                )
+            }
+        }
+
+        root.addView(accessButton)
+
+        val appsTitle = TextView(this).apply {
+            text = "Select apps to clean"
+            textSize = 20f
+            setTextColor(white)
+            setPadding(0, 25, 0, 15)
+        }
+
+        root.addView(appsTitle)
+
+        appContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val scroll = ScrollView(this)
+        scroll.addView(appContainer)
+
+        root.addView(
+            scroll,
+            LinearLayout.LayoutParams(
+                -1,
                 0,
                 1f
             )
-        }
+        )
 
         val footer = TextView(this).apply {
             text = "App by Potato's man"
             textSize = 14f
-            setTextColor(Color.GRAY)
             gravity = Gravity.CENTER
+            setTextColor(Color.GRAY)
+            setPadding(0, 15, 0, 0)
         }
 
-        layout.addView(
-            title,
-            LinearLayout.LayoutParams(
-                -1,
-                -2
-            )
-        )
+        root.addView(footer)
 
-        layout.addView(
-            description,
-            LinearLayout.LayoutParams(
-                -1,
-                -2
-            )
-        )
+        setContentView(root)
 
-        layout.addView(
-            statusText,
-            LinearLayout.LayoutParams(
-                -1,
-                -2
-            )
-        )
-
-        layout.addView(
-            startStopButton,
-            LinearLayout.LayoutParams(
-                -1,
-                -2
-            )
-        )
-
-        layout.addView(
-            accessButton,
-            LinearLayout.LayoutParams(
-                -1,
-                -2
-            )
-        )
-
-        layout.addView(spacer)
-
-        layout.addView(
-            footer,
-            LinearLayout.LayoutParams(
-                -1,
-                -2
-            )
-        )
-
-        setContentView(layout)
+        loadApps()
     }
 
-    private fun updateScreen() {
+    private fun loadApps() {
 
-        val running =
-            preferences.getBoolean("running", true)
+        appContainer.removeAllViews()
 
-        if (running) {
+        val pm = packageManager
 
-            statusText.text = "● RUNNING"
-            statusText.setTextColor(tiffanyBlue)
+        val apps = pm.getInstalledApplications(
+            PackageManager.GET_META_DATA
+        )
+            .filter {
+                it.packageName != packageName
+            }
+            .filter {
+                pm.getLaunchIntentForPackage(it.packageName) != null
+            }
+            .sortedBy {
+                pm.getApplicationLabel(it).toString()
+            }
 
-            startStopButton.text = "STOP"
+        for (app in apps) {
 
-        } else {
+            val packageName = app.packageName
+            val appName =
+                pm.getApplicationLabel(app).toString()
 
-            statusText.text = "● STOPPED"
-            statusText.setTextColor(Color.GRAY)
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 5, 0, 5)
+            }
 
-            startStopButton.text = "START"
+            val checkBox = CheckBox(this).apply {
+
+                text = appName
+                textSize = 17f
+                setTextColor(white)
+
+                isChecked =
+                    preferences.getBoolean(
+                        "selected_$packageName",
+                        false
+                    )
+
+                setOnCheckedChangeListener { _, checked ->
+
+                    preferences.edit()
+                        .putBoolean(
+                            "selected_$packageName",
+                            checked
+                        )
+                        .apply()
+
+                    if (checked) {
+                        showScheduleDialog(
+                            appName,
+                            packageName
+                        )
+                    }
+                }
+            }
+
+            row.addView(
+                checkBox,
+                LinearLayout.LayoutParams(
+                    0,
+                    -2,
+                    1f
+                )
+            )
+
+            val settingsButton = Button(this).apply {
+                text = "⚙"
+                setTextColor(black)
+                setBackgroundColor(tiffanyBlue)
+
+                setOnClickListener {
+                    showScheduleDialog(
+                        appName,
+                        packageName
+                    )
+                }
+            }
+
+            row.addView(settingsButton)
+
+            appContainer.addView(row)
         }
+    }
 
-        NotificationHelper.showStatus(
+    private fun showScheduleDialog(
+        appName: String,
+        packageName: String
+    ) {
+
+        val options = arrayOf(
+            "Always",
+            "Clock schedule",
+            "Duration"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("$appName cleaning")
+            .setItems(options) { _, which ->
+
+                when (which) {
+
+                    0 -> {
+                        saveMode(
+                            packageName,
+                            "always"
+                        )
+                        Toast.makeText(
+                            this,
+                            "Always cleaning $appName",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+
+                    1 -> showClockSchedule(
+                        appName,
+                        packageName
+                    )
+
+                    2 -> showDuration(
+                        appName,
+                        packageName
+                    )
+                }
+            }
+            .show()
+    }
+
+    private fun showClockSchedule(
+        appName: String,
+        packageName: String
+    ) {
+
+        TimePickerDialog(
             this,
-            running
+            { _, hour, minute ->
+
+                val start =
+                    String.format(
+                        "%02d:%02d",
+                        hour,
+                        minute
+                    )
+
+                TimePickerDialog(
+                    this,
+                    { _, endHour, endMinute ->
+
+                        val end =
+                            String.format(
+                                "%02d:%02d",
+                                endHour,
+                                endMinute
+                            )
+
+                        preferences.edit()
+                            .putString(
+                                "mode_$packageName",
+                                "clock"
+                            )
+                            .putString(
+                                "start_$packageName",
+                                start
+                            )
+                            .putString(
+                                "end_$packageName",
+                                end
+                            )
+                            .apply()
+
+                        Toast.makeText(
+                            this,
+                            "$appName: $start → $end",
+                            Toast.LENGTH_LONG
+                        ).show()
+
+                    },
+                    7,
+                    0,
+                    true
+                ).show()
+
+            },
+            22,
+            0,
+            true
+        ).show()
+    }
+
+    private fun showDuration(
+        appName: String,
+        packageName: String
+    ) {
+
+        val input = EditText(this)
+
+        input.hint = "Example: 120"
+        input.inputType =
+            android.text.InputType.TYPE_CLASS_NUMBER
+
+        AlertDialog.Builder(this)
+            .setTitle("Duration for $appName")
+            .setMessage(
+                "Enter duration in minutes"
+            )
+            .setView(input)
+            .setPositiveButton("START") { _, _ ->
+
+                val minutes =
+                    input.text.toString().toLongOrNull()
+
+                if (minutes != null && minutes > 0) {
+
+                    val end =
+                        System.currentTimeMillis() +
+                                minutes * 60_000L
+
+                    preferences.edit()
+                        .putString(
+                            "mode_$packageName",
+                            "duration"
+                        )
+                        .putLong(
+                            "duration_end_$packageName",
+                            end
+                        )
+                        .apply()
+
+                    Toast.makeText(
+                        this,
+                        "$appName cleaning for $minutes minutes",
+                        Toast.LENGTH_LONG
+                    ).show()
+
+                } else {
+
+                    Toast.makeText(
+                        this,
+                        "Enter a valid duration",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+            .setNegativeButton(
+                "CANCEL",
+                null
+            )
+            .show()
+    }
+
+    private fun saveMode(
+        packageName: String,
+        mode: String
+    ) {
+
+        preferences.edit()
+            .putString(
+                "mode_$packageName",
+                mode
+            )
+            .apply()
+    }
+
+    private fun isRunning(): Boolean {
+
+        return preferences.getBoolean(
+            "running",
+            true
         )
     }
 }
