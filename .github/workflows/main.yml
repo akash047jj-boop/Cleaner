@@ -15,6 +15,7 @@ jobs:
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -24,29 +25,30 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Find Android SDK tools
+        run: |
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
+
       - name: Check Android SDK
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
+          which sdkmanager
           sdkmanager --version
-          adb --version
 
-      - name: Accept Android licenses
+      - name: Install Android SDK packages
         run: |
           yes | sdkmanager --licenses || true
-
-      - name: Install Android SDK
-        run: |
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Generate Gradle wrapper
-        run: |
-          gradle wrapper --gradle-version 8.9
-
-      - name: Make Gradle executable
-        run: chmod +x gradlew
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
 
       - name: Build APK
-        run: ./gradlew assembleDebug
+        run: gradle assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
