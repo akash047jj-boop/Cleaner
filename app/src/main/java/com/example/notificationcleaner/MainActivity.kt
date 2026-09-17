@@ -180,7 +180,6 @@ class MainActivity : Activity() {
         .sortedBy {
             pm.getApplicationLabel(it).toString()
         }
-    
 
         for (app in apps) {
 
