@@ -151,24 +151,36 @@ class MainActivity : Activity() {
         loadApps()
     }
 
-    private fun loadApps() {
+   private fun loadApps() {
 
-        appContainer.removeAllViews()
+    appContainer.removeAllViews()
 
-        val pm = packageManager
+    val pm = packageManager
 
-        val apps = pm.getInstalledApplications(
-            PackageManager.GET_META_DATA
-        )
-            .filter {
-                it.packageName != packageName
-            }
-            .filter {
-                pm.getLaunchIntentForPackage(it.packageName) != null
-            }
-            .sortedBy {
-                pm.getApplicationLabel(it).toString()
-            }
+    val launcherIntent = Intent(
+        Intent.ACTION_MAIN,
+        null
+    ).apply {
+        addCategory(Intent.CATEGORY_LAUNCHER)
+    }
+
+    val apps = pm.queryIntentActivities(
+        launcherIntent,
+        PackageManager.MATCH_ALL
+    )
+        .map {
+            it.activityInfo.applicationInfo
+        }
+        .filter {
+            it.packageName != packageName
+        }
+        .distinctBy {
+            it.packageName
+        }
+        .sortedBy {
+            pm.getApplicationLabel(it).toString()
+        }
+    
 
         for (app in apps) {
 
