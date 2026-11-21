@@ -52,57 +52,6 @@ object StorageRepository {
 }
 fun formatSize(s:Long):String{if(s<1024)return "$s B";val u=arrayOf("KB","MB","GB","TB");var v=s.toDouble();var i=-1;do{v/=1024;i++}while(v>=1024&&i<u.lastIndex);return String.format(Locale.getDefault(),"%.1f %s",v,u[i])}
 
-class MemoryTaskService:Service(){
-    private val executor=Executors.newSingleThreadExecutor()
-    private val cancelled=AtomicBoolean(false)
-    override fun onBind(intent:Intent?)=null
-    override fun onStartCommand(intent:Intent?,flags:Int,startId:Int):Int{
-        when(intent?.action){
-            ACTION_STOP->{cancelled.set(true);stopSelf();return START_NOT_STICKY}
-            ACTION_SCAN->scan()
-            ACTION_DELETE->{
-                val paths=intent.getStringArrayListExtra(EXTRA_PATHS)?:arrayListOf()
-                startForeground(NID,notification("Preparing deletion",0,paths.size,true))
-                executor.execute{
-                    val result=StorageRepository.delete(paths){done,total,name->update("Deleting: $name",done,total)}
-                    update("Deleted ${result.first} files • ${formatSize(result.second)} freed",result.first,paths.size,false)
-                    sendBroadcast(Intent(ACTION_FINISHED).setPackage(packageName));stopSelf()
-                }
-            }
-        }
-        return START_REDELIVER_INTENT
-    }
-    private fun scan(){
-        cancelled.set(false);startForeground(NID,notification("Scanning storage",0,0,true))
-        executor.execute{
-            try{
-                StorageRepository.scan{total,matched,_->if(!cancelled.get())update("Scanned $total files • Found $matched matches",total,0)}
-                update("Scan complete • ${StorageRepository.files.size} supported files",1,1,false)
-            }catch(e:Exception){update("Scan stopped: ${e.message ?: "Storage access error"}",0,1,false)}
-            sendBroadcast(Intent(ACTION_FINISHED).setPackage(packageName));stopSelf()
-        }
-    }
-    private fun update(text:String,progress:Int,max:Int,ongoing:Boolean=true){
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(NID,notification(text,progress,max,ongoing))
-        sendBroadcast(Intent(ACTION_PROGRESS).setPackage(packageName).putExtra("text",text))
-    }
-    private fun notification(text:String,progress:Int,max:Int,ongoing:Boolean):Notification{
-        val nm=getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(NotificationChannel(CHANNEL,"Storage tasks",NotificationManager.IMPORTANCE_LOW))
-        val open=PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val builder=NotificationCompat.Builder(this,CHANNEL).setSmallIcon(android.R.drawable.ic_menu_save).setContentTitle("Memory Cleaner").setContentText(text).setContentIntent(open).setOngoing(ongoing).setOnlyAlertOnce(true).setPriority(NotificationCompat.PRIORITY_LOW)
-        if(max>0)builder.setProgress(max,progress.coerceAtMost(max),false)
-        if(ongoing){val stop=PendingIntent.getService(this,1,Intent(this,MemoryTaskService::class.java).setAction(ACTION_STOP),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE);builder.addAction(android.R.drawable.ic_media_pause,"Stop",stop)}
-        return builder.build()
-    }
-    override fun onDestroy(){executor.shutdown();super.onDestroy()}
-    companion object{
-        const val CHANNEL="memory_tasks";const val NID=2201
-        const val ACTION_SCAN="memory.scan";const val ACTION_DELETE="memory.delete";const val ACTION_STOP="memory.stop"
-        const val ACTION_PROGRESS="memory.progress";const val ACTION_FINISHED="memory.finished";const val EXTRA_PATHS="paths"
-    }
-}
-
 class MainActivity:Activity(){
     private val selectedExtensions=mutableSetOf<String>();private val selectedPaths=mutableSetOf<String>()
     private var activeCategory="Video";private var gridMode=true;private var sortMode="Date"
