@@ -20,10 +20,10 @@ class MemoryTaskService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_SCAN -> runScan()
+            ACTION_SCAN -> scan()
             ACTION_DELETE -> {
                 val paths = intent.getStringArrayListExtra(EXTRA_PATHS) ?: arrayListOf()
-                startForeground(NOTIFICATION_ID, buildNotification("Preparing deletion", 0, paths.size, true))
+                startForeground(NID, notification("Preparing deletion", 0, paths.size, true))
                 executor.execute {
                     val result = StorageRepository.delete(paths) { done, total, name ->
                         update("Deleting: $name", done, total)
@@ -37,7 +37,7 @@ class MemoryTaskService : Service() {
         return START_REDELIVER_INTENT
     }
 
-    private fun runScan() {
+    private fun scan() {
         cancelled.set(false)
         startForeground(NOTIFICATION_ID, buildNotification("Scanning storage", 0, 0, true))
         executor.execute {
