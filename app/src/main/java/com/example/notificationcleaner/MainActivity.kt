@@ -15,6 +15,7 @@ import android.widget.*
 import java.io.File
 import java.text.DateFormat
 import java.util.Locale
+import java.util.concurrent.Executors
 
 data class StoredFile(val path:String,val name:String,val extension:String,val size:Long,val modified:Long,val category:String)
 
@@ -59,7 +60,9 @@ fun formatSize(s:Long):String{if(s<1024)return "$s B";val u=arrayOf("KB","MB","G
 class MainActivity:Activity(){
     private val selectedExtensions=mutableSetOf<String>();private val selectedPaths=mutableSetOf<String>()
     private var activeCategory="Video";private var gridMode=true;private var sortMode="Date"
-    private lateinit var content:LinearLayout;private lateinit var status:TextView;private lateinit var count:TextView
+    private lateinit var content:LinearLayout;private lateinit var status:TextView;private lateinit var count:TextView;private lateinit var categoryBar:LinearLayout
+    private val thumbnailExecutor=Executors.newFixedThreadPool(3)
+    private var displayLimit=200
     private val receiver=object:BroadcastReceiver(){override fun onReceive(context:Context?,intent:Intent?){when(intent?.action){
         MemoryTaskService.ACTION_PROGRESS->status.text=intent.getStringExtra("text")?:"Working…"
         MemoryTaskService.ACTION_FINISHED->{status.text="Task finished";render()}
@@ -89,6 +92,19 @@ class MainActivity:Activity(){
             setStroke(dp(1),Color.rgb(113,238,168))
         }
         setOnClickListener{click()}
+    }
+    private fun refreshCategoryButtons(){
+        if(!::categoryBar.isInitialized)return
+        categoryBar.removeAllViews()
+        StorageRepository.extensions.keys.forEach{category->
+            categoryBar.addView(categoryButton(category,activeCategory==category){
+                activeCategory=category
+                selectedExtensions.clear()
+                displayLimit=200
+                refreshCategoryButtons()
+                render()
+            },LinearLayout.LayoutParams(0,dp(42),1f).apply{rightMargin=dp(4)})
+        }
     }
     private fun ensureNotificationPermission():Boolean{
         if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED){
@@ -125,8 +141,8 @@ class MainActivity:Activity(){
         root.addView(actions)
         status=TextView(this).apply{text="Ready to scan";textSize=13f;setTextColor(Color.LTGRAY);setPadding(0,dp(12),0,dp(8))};root.addView(status)
         count=TextView(this).apply{textSize=14f;setTextColor(Color.WHITE);setPadding(0,0,0,dp(10))};root.addView(count)
-        val categories=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
-        StorageRepository.extensions.keys.forEach{category->categories.addView(categoryButton(category,activeCategory==category){activeCategory=category;selectedExtensions.clear();render()},LinearLayout.LayoutParams(0,dp(42),1f).apply{rightMargin=dp(4)})};root.addView(categories)
+        categoryBar=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+        refreshCategoryButtons();root.addView(categoryBar)
         val tools=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
         tools.addView(actionButton("EXTENSIONS"){extensionDialog()},LinearLayout.LayoutParams(0,dp(42),1f))
         tools.addView(actionButton(if(gridMode)"LIST VIEW" else "THUMBNAILS"){gridMode=!gridMode;render()},LinearLayout.LayoutParams(0,dp(42),1f).apply{leftMargin=dp(5)})
@@ -163,11 +179,24 @@ class MainActivity:Activity(){
     private fun startServiceCompat(intent:Intent){try{if(Build.VERSION.SDK_INT>=26)startForegroundService(intent)else startService(intent)}catch(error:Exception){toast("Could not start task: ${error.message}")}}
     private fun render(){
         if(!::content.isInitialized)return
-        content.removeAllViews();val items=visibleFiles();val bytes=items.sumOf{it.size}
+        content.removeAllViews()
+        refreshCategoryButtons()
+        val items=visibleFiles()
+        val bytes=items.sumOf{it.size}
         count.text="${items.size} files • ${formatSize(bytes)}  |  ${selectedPaths.size} selected"
-        if(StorageRepository.files.isEmpty()){content.addView(TextView(this).apply{text="No scan results yet.\\n\\nTap SCAN STORAGE to find supported files. The scan continues in the background and reports progress in your notification.";textSize=15f;setTextColor(Color.LTGRAY);setPadding(dp(12),dp(30),dp(12),dp(30))});return}
-        if(items.isEmpty()){content.addView(TextView(this).apply{text="No ${activeCategory.lowercase()} files match this selection.";setTextColor(Color.LTGRAY);setPadding(10,30,10,30)});return}
-        items.forEach{file->
+        if(StorageRepository.files.isEmpty()){
+            content.addView(TextView(this).apply{
+                text="No scan results yet.\n\nTap SCAN STORAGE to find supported files."
+                textSize=15f;setTextColor(Color.LTGRAY);setPadding(dp(12),dp(30),dp(12),dp(30))
+            })
+            return
+        }
+        if(items.isEmpty()){
+            content.addView(TextView(this).apply{text="No ${activeCategory.lowercase()} files match this selection.";setTextColor(Color.LTGRAY);setPadding(10,30,10,30)})
+            return
+        }
+        val shown=items.take(displayLimit)
+        shown.forEach{file->
             val chosen=file.path in selectedPaths
             val row=LinearLayout(this).apply{
                 orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL
@@ -181,11 +210,13 @@ class MainActivity:Activity(){
             val preview=ImageView(this).apply{
                 scaleType=ImageView.ScaleType.CENTER_CROP
                 setBackgroundColor(Color.rgb(12,18,20))
-                val bitmap=makeThumbnail(file)
-                if(bitmap!=null)setImageBitmap(bitmap) else {
-                    setImageResource(android.R.drawable.ic_menu_report_image)
-                    imageTintList=android.content.res.ColorStateList.valueOf(Color.rgb(113,238,168))
-                    scaleType=ImageView.ScaleType.CENTER_INSIDE
+                setImageResource(android.R.drawable.ic_menu_report_image)
+                imageTintList=android.content.res.ColorStateList.valueOf(Color.rgb(113,238,168))
+                scaleType=ImageView.ScaleType.CENTER_INSIDE
+                tag=file.path
+                thumbnailExecutor.execute{
+                    val bitmap=makeThumbnail(file)
+                    if(bitmap!=null)post{if(tag==file.path)setImageBitmap(bitmap)}
                 }
             }
             row.addView(preview,LinearLayout.LayoutParams(dp(if(gridMode)88 else 62),dp(if(gridMode)88 else 62)))
@@ -212,7 +243,13 @@ class MainActivity:Activity(){
                 }
             })
             row.setOnClickListener{openFile(file)}
-            content.addView(row,LinearLayout.LayoutParams(-1,dp(if(gridMode)112 else 82)).apply{bottomMargin=dp(7)})
+            content.addView(row,LinearLayout.LayoutParams(-1,dp(92)).apply{bottomMargin=dp(7)})
+        }
+        if(shown.size<items.size){
+            content.addView(actionButton("LOAD MORE (${items.size-shown.size} remaining)"){
+                displayLimit=(displayLimit+200).coerceAtMost(items.size)
+                render()
+            },LinearLayout.LayoutParams(-1,dp(46)))
         }
     }
     private fun openFile(file:StoredFile){
@@ -220,5 +257,9 @@ class MainActivity:Activity(){
         catch(_:Exception){toast("No compatible viewer found")}
     }
     private fun toast(message:String)=Toast.makeText(this,message,Toast.LENGTH_SHORT).show()
-    override fun onDestroy(){try{unregisterReceiver(receiver)}catch(_:Exception){};super.onDestroy()}
+    override fun onDestroy(){
+        try{unregisterReceiver(receiver)}catch(_:Exception){}
+        thumbnailExecutor.shutdownNow()
+        super.onDestroy()
+    }
 }
