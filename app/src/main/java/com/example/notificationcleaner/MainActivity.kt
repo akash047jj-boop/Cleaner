@@ -10,8 +10,6 @@ import android.media.MediaMetadataRetriever
 import android.graphics.BitmapFactory
 import android.graphics.Movie
 import android.graphics.ImageDecoder
-import android.graphics.Movie
-import android.graphics.ImageDecoder
 import android.graphics.drawable.GradientDrawable
 import android.media.ThumbnailUtils
 import android.util.Size
