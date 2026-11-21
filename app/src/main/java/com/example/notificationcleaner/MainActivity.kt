@@ -8,6 +8,8 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.media.MediaMetadataRetriever
 import android.graphics.BitmapFactory
+import android.graphics.Movie
+import android.graphics.ImageDecoder
 import android.graphics.drawable.GradientDrawable
 import android.media.ThumbnailUtils
 import android.util.Size
@@ -63,7 +65,7 @@ fun formatSize(s:Long):String{if(s<1024)return "$s B";val u=arrayOf("KB","MB","G
 
 class MainActivity:Activity(){
     private val selectedExtensions=mutableSetOf<String>();private val selectedPaths=mutableSetOf<String>()
-    private var activeCategory="Video";private var gridMode=true;private var sortMode="Date"
+    private var activeCategory="Video";private var gridMode=true;private var sortMode="Date";private var extensionsFilterActive=false
     private lateinit var content:LinearLayout;private lateinit var status:TextView;private lateinit var count:TextView;private lateinit var categoryBar:LinearLayout
     private val thumbnailExecutor=Executors.newFixedThreadPool(3)
     private var displayLimit=200
@@ -104,6 +106,7 @@ class MainActivity:Activity(){
             categoryBar.addView(categoryButton(category,activeCategory==category){
                 activeCategory=category
                 selectedExtensions.clear()
+                extensionsFilterActive=false
                 displayLimit=200
                 refreshCategoryButtons()
                 render()
@@ -188,15 +191,39 @@ class MainActivity:Activity(){
         root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f));setContentView(root);render()
     }
     private fun visibleFiles():List<StoredFile>{
-        val allowed=if(selectedExtensions.isEmpty())StorageRepository.extensions[activeCategory].orEmpty().toSet() else selectedExtensions.toSet()
+        val allowed=if(extensionsFilterActive)selectedExtensions.toSet() else StorageRepository.extensions[activeCategory].orEmpty().toSet()
         val items=StorageRepository.files.filter{it.category==activeCategory&&it.extension in allowed}
         return when(sortMode){"Name"->items.sortedBy{it.name.lowercase(Locale.ROOT)};"Size"->items.sortedByDescending{it.size};else->items.sortedByDescending{it.modified}}
     }
     private fun extensionDialog(){
         val all=StorageRepository.extensions[activeCategory].orEmpty()
-        val checked=BooleanArray(all.size){selectedExtensions.isEmpty()||all[it] in selectedExtensions}
-        AlertDialog.Builder(this).setTitle("$activeCategory extensions").setMultiChoiceItems(all.map{".$it"}.toTypedArray(),checked){_,index,isChecked->if(isChecked)selectedExtensions.add(all[index])else selectedExtensions.remove(all[index])}
-            .setNeutralButton("ALL"){_,_->selectedExtensions.clear();render()}.setPositiveButton("APPLY"){_,_->render()}.setNegativeButton("CANCEL",null).show()
+        val panel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(20),dp(8),dp(20),dp(8))}
+        val allToggle=CheckBox(this).apply{text="All $activeCategory extensions";isChecked=!extensionsFilterActive}
+        panel.addView(allToggle)
+        val scroll=ScrollView(this)
+        val choices=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
+        val checks=all.map{ext->
+            CheckBox(this).apply{
+                text=".$ext"
+                isChecked=extensionsFilterActive&&ext in selectedExtensions
+                setOnCheckedChangeListener{_,checked->
+                    if(checked){
+                        if(!extensionsFilterActive){extensionsFilterActive=true;selectedExtensions.clear();allToggle.isChecked=false}
+                        selectedExtensions.add(ext)
+                    }else selectedExtensions.remove(ext)
+                }
+            }.also{choices.addView(it)}
+        }
+        scroll.addView(choices)
+        panel.addView(scroll,LinearLayout.LayoutParams(-1,dp(300)))
+        allToggle.setOnCheckedChangeListener{_,checked->
+            if(checked){extensionsFilterActive=false;selectedExtensions.clear();checks.forEach{it.isChecked=false}}
+            else if(!extensionsFilterActive){extensionsFilterActive=true;selectedExtensions.clear()}
+        }
+        AlertDialog.Builder(this).setTitle("$activeCategory extensions").setView(panel)
+            .setNeutralButton("ALL"){_,_->extensionsFilterActive=false;selectedExtensions.clear();render()}
+            .setPositiveButton("APPLY"){_,_->render()}
+            .setNegativeButton("CANCEL",null).show()
     }
     private fun sortDialog(){AlertDialog.Builder(this).setTitle("Sort files").setItems(arrayOf("Date (newest first)","Size (largest first)","Name (A–Z)")){_,index->sortMode=arrayOf("Date","Size","Name")[index];render()}.show()}
     private fun confirmDelete(){
