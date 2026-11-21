@@ -39,7 +39,7 @@ class MemoryTaskService : Service() {
 
     private fun scan() {
         cancelled.set(false)
-        startForeground(NOTIFICATION_ID, buildNotification("Scanning storage", 0, 0, true))
+        startForeground(NID, notification("Scanning storage", 0, 0, true))
         executor.execute {
             try {
                 StorageRepository.scan { total, matched, _ ->
@@ -56,11 +56,11 @@ class MemoryTaskService : Service() {
 
     private fun update(text: String, progress: Int, max: Int, ongoing: Boolean = true) {
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(NOTIFICATION_ID, buildNotification(text, progress, max, ongoing))
+            .notify(NID, notification(text, progress, max, ongoing))
         sendBroadcast(Intent(ACTION_PROGRESS).setPackage(packageName).putExtra("text", text))
     }
 
-    private fun buildNotification(text: String, progress: Int, max: Int, ongoing: Boolean): Notification {
+    private fun notification(text: String, progress: Int, max: Int, ongoing: Boolean): Notification {
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         manager.createNotificationChannel(NotificationChannel(CHANNEL, "Storage tasks", NotificationManager.IMPORTANCE_LOW))
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
@@ -90,7 +90,7 @@ class MemoryTaskService : Service() {
 
     companion object {
         const val CHANNEL = "memory_tasks"
-        const val NOTIFICATION_ID = 2201
+        const val NID = 2201
         const val ACTION_SCAN = "memory.scan"
         const val ACTION_DELETE = "memory.delete"
         const val ACTION_STOP = "memory.stop"
