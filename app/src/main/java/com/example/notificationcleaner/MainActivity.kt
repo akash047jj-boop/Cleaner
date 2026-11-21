@@ -2,17 +2,15 @@ package com.example.notificationcleaner
 
 import android.app.*
 import android.content.*
+import android.graphics.Color
 import android.net.Uri
 import android.os.*
 import android.provider.Settings
 import android.view.Gravity
 import android.widget.*
-import androidx.core.app.NotificationCompat
 import java.io.File
 import java.text.DateFormat
 import java.util.Locale
-import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 
 data class StoredFile(val path:String,val name:String,val extension:String,val size:Long,val modified:Long,val category:String)
 
