@@ -2,10 +2,10 @@ package com.example.notificationcleaner
 
 import android.app.*
 import android.content.*
+import android.net.Uri
 import android.os.*
 import android.provider.Settings
-import android.net.Uri
-import android.view.*
+import android.view.Gravity
 import android.widget.*
 import androidx.core.app.NotificationCompat
 import java.io.File
@@ -25,33 +25,34 @@ object StorageRepository {
     )
     @Volatile var files:List<StoredFile> = emptyList()
     fun scan(onProgress:(Int,Int,String)->Unit):List<StoredFile> {
-        val found=ArrayList<StoredFile>(); val roots=mutableListOf<File>()
-        roots.add(android.os.Environment.getExternalStorageDirectory())
-        val seen=HashSet<String>(); val stack=ArrayDeque<File>(); roots.filter{it.exists()}.forEach{stack.add(it)}
+        val found=ArrayList<StoredFile>()
+        val root=android.os.Environment.getExternalStorageDirectory()
+        val seen=HashSet<String>(); val stack=ArrayDeque<File>()
+        if(root.exists())stack.add(root)
         var count=0
         while(stack.isNotEmpty()){
             val dir=stack.removeLast(); if(!seen.add(dir.absolutePath))continue
             val children=try{dir.listFiles()}catch(_:Exception){null}?:continue
             for(f in children){
-                if(f.isDirectory){stack.add(f)}
+                if(f.isDirectory)stack.add(f)
                 else if(f.isFile){
-                    count++; val ext=f.extension.lowercase(Locale.ROOT)
+                    count++
+                    val ext=f.extension.lowercase(Locale.ROOT)
                     val cat=extensions.entries.firstOrNull{ext in it.value}?.key
                     if(cat!=null)found.add(StoredFile(f.absolutePath,f.name,ext,f.length(),f.lastModified(),cat))
                     if(count%250==0)onProgress(count,found.size,f.name)
                 }
             }
         }
-        files=found; onProgress(count,found.size,"Scan complete"); return found
+        files=found;onProgress(count,found.size,"Scan complete");return found
     }
     fun delete(paths:List<String>,progress:(Int,Int,String)->Unit):Pair<Int,Long>{
-        var n=0; var bytes=0L
-        paths.forEachIndexed{i,p->val f=File(p);val s=f.length();val ok=try{f.delete()}catch(_:Exception){false};if(ok){n++;bytes+=s};progress(i+1,paths.size,f.name)}
+        var n=0;var bytes=0L
+        paths.forEachIndexed{i,p->val f=File(p);val size=f.length();val ok=try{f.delete()}catch(_:Exception){false};if(ok){n++;bytes+=size};progress(i+1,paths.size,f.name)}
         files=files.filter{File(it.path).exists()};return n to bytes
     }
 }
-
-fun formatSize(s:Long):String { if(s<1024)return "$s B"; val u=arrayOf("KB","MB","GB","TB");var v=s.toDouble();var i=-1;do{v/=1024;i++}while(v>=1024&&i<u.lastIndex);return String.format(Locale.getDefault(),"%.1f %s",v,u[i]) }
+fun formatSize(s:Long):String{if(s<1024)return "$s B";val u=arrayOf("KB","MB","GB","TB");var v=s.toDouble();var i=-1;do{v/=1024;i++}while(v>=1024&&i<u.lastIndex);return String.format(Locale.getDefault(),"%.1f %s",v,u[i])}
 
 class MemoryTaskService:Service(){
     private val executor=Executors.newSingleThreadExecutor()
@@ -65,7 +66,7 @@ class MemoryTaskService:Service(){
                 val paths=intent.getStringArrayListExtra(EXTRA_PATHS)?:arrayListOf()
                 startForeground(NID,notification("Preparing deletion",0,paths.size,true))
                 executor.execute{
-                    val result=StorageRepository.delete(paths){d,t,name->update("Deleting: $name",d,t)}
+                    val result=StorageRepository.delete(paths){done,total,name->update("Deleting: $name",done,total)}
                     update("Deleted ${result.first} files • ${formatSize(result.second)} freed",result.first,paths.size,false)
                     sendBroadcast(Intent(ACTION_FINISHED).setPackage(packageName));stopSelf()
                 }
@@ -77,24 +78,24 @@ class MemoryTaskService:Service(){
         cancelled.set(false);startForeground(NID,notification("Scanning storage",0,0,true))
         executor.execute{
             try{
-                StorageRepository.scan{total,matched,name->if(!cancelled.get())update("Scanned $total files • Found $matched matches",total,0)}
+                StorageRepository.scan{total,matched,_->if(!cancelled.get())update("Scanned $total files • Found $matched matches",total,0)}
                 update("Scan complete • ${StorageRepository.files.size} supported files",1,1,false)
-            }catch(e:Exception){update("Scan stopped: ${e.message?: "Storage access error"}",0,1,false)}
+            }catch(e:Exception){update("Scan stopped: ${e.message ?: "Storage access error"}",0,1,false)}
             sendBroadcast(Intent(ACTION_FINISHED).setPackage(packageName));stopSelf()
         }
     }
-    private fun update(text:String,p:Int,max:Int,ongoing:Boolean=true){
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(NID,notification(text,p,max,ongoing))
+    private fun update(text:String,progress:Int,max:Int,ongoing:Boolean=true){
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(NID,notification(text,progress,max,ongoing))
         sendBroadcast(Intent(ACTION_PROGRESS).setPackage(packageName).putExtra("text",text))
     }
-    private fun notification(text:String,p:Int,max:Int,ongoing:Boolean):Notification{
+    private fun notification(text:String,progress:Int,max:Int,ongoing:Boolean):Notification{
         val nm=getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(NotificationChannel(CHANNEL,"Storage tasks",NotificationManager.IMPORTANCE_LOW))
         val open=PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val b=NotificationCompat.Builder(this,CHANNEL).setSmallIcon(android.R.drawable.ic_menu_save).setContentTitle("Memory Cleaner").setContentText(text).setContentIntent(open).setOngoing(ongoing).setOnlyAlertOnce(true).setPriority(NotificationCompat.PRIORITY_LOW)
-        if(max>0)b.setProgress(max,p.coerceAtMost(max),false)
-        if(ongoing){val stop=PendingIntent.getService(this,1,Intent(this,MemoryTaskService::class.java).setAction(ACTION_STOP),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE);b.addAction(android.R.drawable.ic_media_pause,"Stop",stop)}
-        return b.build()
+        val builder=NotificationCompat.Builder(this,CHANNEL).setSmallIcon(android.R.drawable.ic_menu_save).setContentTitle("Memory Cleaner").setContentText(text).setContentIntent(open).setOngoing(ongoing).setOnlyAlertOnce(true).setPriority(NotificationCompat.PRIORITY_LOW)
+        if(max>0)builder.setProgress(max,progress.coerceAtMost(max),false)
+        if(ongoing){val stop=PendingIntent.getService(this,1,Intent(this,MemoryTaskService::class.java).setAction(ACTION_STOP),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE);builder.addAction(android.R.drawable.ic_media_pause,"Stop",stop)}
+        return builder.build()
     }
     override fun onDestroy(){executor.shutdown();super.onDestroy()}
     companion object{
@@ -108,74 +109,74 @@ class MainActivity:Activity(){
     private val selectedExtensions=mutableSetOf<String>();private val selectedPaths=mutableSetOf<String>()
     private var activeCategory="Video";private var gridMode=true;private var sortMode="Date"
     private lateinit var content:LinearLayout;private lateinit var status:TextView;private lateinit var count:TextView
-    private val receiver=object:BroadcastReceiver(){override fun onReceive(c:Context?,i:Intent?){when(i?.action){
-        MemoryTaskService.ACTION_PROGRESS->status.text=i.getStringExtra("text")?:"Working…"
+    private val receiver=object:BroadcastReceiver(){override fun onReceive(context:Context?,intent:Intent?){when(intent?.action){
+        MemoryTaskService.ACTION_PROGRESS->status.text=intent.getStringExtra("text")?:"Working…"
         MemoryTaskService.ACTION_FINISHED->{status.text="Task finished";render()}
     }}}
     override fun onCreate(savedInstanceState:Bundle?){super.onCreate(savedInstanceState)
         window.statusBarColor=Color.rgb(12,15,19);window.navigationBarColor=Color.rgb(12,15,19)
-        val f=IntentFilter().apply{addAction(MemoryTaskService.ACTION_PROGRESS);addAction(MemoryTaskService.ACTION_FINISHED)}
-        if(Build.VERSION.SDK_INT>=33)registerReceiver(receiver,f,RECEIVER_NOT_EXPORTED) else @Suppress("DEPRECATION") registerReceiver(receiver,f)
+        val filter=IntentFilter().apply{addAction(MemoryTaskService.ACTION_PROGRESS);addAction(MemoryTaskService.ACTION_FINISHED)}
+        if(Build.VERSION.SDK_INT>=33)registerReceiver(receiver,filter,RECEIVER_NOT_EXPORTED) else @Suppress("DEPRECATION") registerReceiver(receiver,filter)
         buildUi();checkStoragePermission()
     }
-    private fun dp(n:Int)=(n*resources.displayMetrics.density).toInt()
+    private fun dp(value:Int)=(value*resources.displayMetrics.density).toInt()
     private fun checkStoragePermission(){
         if(Build.VERSION.SDK_INT>=30&&!Environment.isExternalStorageManager()){
             AlertDialog.Builder(this).setTitle("Allow storage access")
-                .setMessage("To scan shared device storage, enable All files access for Memory Cleaner. Android may still protect certain app-private folders.")
+                .setMessage("To scan shared device storage, enable All files access for Memory Cleaner. Android can still protect some app-private folders.")
                 .setPositiveButton("Open settings"){_,_->try{startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,Uri.parse("package:$packageName")))}catch(_:Exception){startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))}}
                 .setNegativeButton("Later",null).show()
         }
     }
-    private fun button(label:String,click:()->Unit)=Button(this).apply{text=label;textSize=10f;isAllCaps=false;setTextColor(Color.rgb(12,15,19));setBackgroundColor(Color.rgb(113,238,168));setOnClickListener{click()}}
+    private fun actionButton(label:String,click:()->Unit)=Button(this).apply{text=label;textSize=10f;isAllCaps=false;setTextColor(Color.rgb(12,15,19));setBackgroundColor(Color.rgb(113,238,168));setOnClickListener{click()}}
     private fun buildUi(){
         val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(18),dp(20),dp(18),dp(12));setBackgroundColor(Color.rgb(12,15,19))}
         root.addView(TextView(this).apply{text="MEMORY CLEANER";textSize=23f;setTextColor(Color.rgb(113,238,168));typeface=android.graphics.Typeface.DEFAULT_BOLD})
         root.addView(TextView(this).apply{text="Find files. Choose what stays. Clear the rest.";textSize=13f;setTextColor(Color.LTGRAY);setPadding(0,dp(5),0,dp(12))})
         val actions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
-        actions.addView(button("SCAN STORAGE"){startTask(MemoryTaskService.ACTION_SCAN)},LinearLayout.LayoutParams(0,dp(48),1f))
-        actions.addView(button("ALL FILE ACCESS"){checkStoragePermission()},LinearLayout.LayoutParams(0,dp(48),1f).apply{leftMargin=dp(8)})
+        actions.addView(actionButton("SCAN STORAGE"){startTask(MemoryTaskService.ACTION_SCAN)},LinearLayout.LayoutParams(0,dp(48),1f))
+        actions.addView(actionButton("ALL FILE ACCESS"){checkStoragePermission()},LinearLayout.LayoutParams(0,dp(48),1f).apply{leftMargin=dp(8)})
         root.addView(actions)
         status=TextView(this).apply{text="Ready to scan";textSize=13f;setTextColor(Color.LTGRAY);setPadding(0,dp(12),0,dp(8))};root.addView(status)
         count=TextView(this).apply{textSize=14f;setTextColor(Color.WHITE);setPadding(0,0,0,dp(10))};root.addView(count)
-        val cats=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
-        StorageRepository.extensions.keys.forEach{cat->cats.addView(button(cat.uppercase()){activeCategory=cat;selectedExtensions.clear();render()},LinearLayout.LayoutParams(0,dp(42),1f).apply{rightMargin=dp(4)})};root.addView(cats)
+        val categories=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+        StorageRepository.extensions.keys.forEach{category->categories.addView(actionButton(category.uppercase()){activeCategory=category;selectedExtensions.clear();render()},LinearLayout.LayoutParams(0,dp(42),1f).apply{rightMargin=dp(4)})};root.addView(categories)
         val tools=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
-        tools.addView(button("EXTENSIONS"){extensionDialog()},LinearLayout.LayoutParams(0,dp(42),1f))
-        tools.addView(button(if(gridMode)"LIST VIEW" else "THUMBNAILS"){gridMode=!gridMode;render()},LinearLayout.LayoutParams(0,dp(42),1f).apply{leftMargin=dp(5)})
-        tools.addView(button("SORT"){sortDialog()},LinearLayout.LayoutParams(0,dp(42),1f).apply{leftMargin=dp(5)});root.addView(tools)
-        val select=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
-        select.addView(button("SELECT ALL"){visible().forEach{selectedPaths.add(it.path)};render()},LinearLayout.LayoutParams(0,dp(42),1f))
-        select.addView(button("CLEAR"){selectedPaths.clear();render()},LinearLayout.LayoutParams(0,dp(42),1f).apply{leftMargin=dp(5)})
-        select.addView(button("DELETE SELECTED"){confirmDelete()},LinearLayout.LayoutParams(0,dp(42),1f).apply{leftMargin=dp(5)});root.addView(select)
+        tools.addView(actionButton("EXTENSIONS"){extensionDialog()},LinearLayout.LayoutParams(0,dp(42),1f))
+        tools.addView(actionButton(if(gridMode)"LIST VIEW" else "THUMBNAILS"){gridMode=!gridMode;render()},LinearLayout.LayoutParams(0,dp(42),1f).apply{leftMargin=dp(5)})
+        tools.addView(actionButton("SORT"){sortDialog()},LinearLayout.LayoutParams(0,dp(42),1f).apply{leftMargin=dp(5)});root.addView(tools)
+        val selection=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+        selection.addView(actionButton("SELECT ALL"){visibleFiles().forEach{selectedPaths.add(it.path)};render()},LinearLayout.LayoutParams(0,dp(42),1f))
+        selection.addView(actionButton("CLEAR"){selectedPaths.clear();render()},LinearLayout.LayoutParams(0,dp(42),1f).apply{leftMargin=dp(5)})
+        selection.addView(actionButton("DELETE SELECTED"){confirmDelete()},LinearLayout.LayoutParams(0,dp(42),1f).apply{leftMargin=dp(5)});root.addView(selection)
         val scroll=ScrollView(this);content=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};scroll.addView(content)
         root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f));setContentView(root);render()
     }
-    private fun visible():List<StoredFile>{
-        val exts=if(selectedExtensions.isEmpty())StorageRepository.extensions[activeCategory].orEmpty().toSet() else selectedExtensions.toSet()
-        val l=StorageRepository.files.filter{it.category==activeCategory&&it.extension in exts}
-        return when(sortMode){"Name"->l.sortedBy{it.name.lowercase(Locale.ROOT)};"Size"->l.sortedByDescending{it.size};else->l.sortedByDescending{it.modified}}
+    private fun visibleFiles():List<StoredFile>{
+        val allowed=if(selectedExtensions.isEmpty())StorageRepository.extensions[activeCategory].orEmpty().toSet() else selectedExtensions.toSet()
+        val items=StorageRepository.files.filter{it.category==activeCategory&&it.extension in allowed}
+        return when(sortMode){"Name"->items.sortedBy{it.name.lowercase(Locale.ROOT)};"Size"->items.sortedByDescending{it.size};else->items.sortedByDescending{it.modified}}
     }
     private fun extensionDialog(){
         val all=StorageRepository.extensions[activeCategory].orEmpty()
         val checked=BooleanArray(all.size){selectedExtensions.isEmpty()||all[it] in selectedExtensions}
-        AlertDialog.Builder(this).setTitle("$activeCategory extensions").setMultiChoiceItems(all.map{".$it"}.toTypedArray(),checked){_,i,on->if(on)selectedExtensions.add(all[i])else selectedExtensions.remove(all[i])}
+        AlertDialog.Builder(this).setTitle("$activeCategory extensions").setMultiChoiceItems(all.map{".$it"}.toTypedArray(),checked){_,index,isChecked->if(isChecked)selectedExtensions.add(all[index])else selectedExtensions.remove(all[index])}
             .setNeutralButton("ALL"){_,_->selectedExtensions.clear();render()}.setPositiveButton("APPLY"){_,_->render()}.setNegativeButton("CANCEL",null).show()
     }
-    private fun sortDialog(){AlertDialog.Builder(this).setTitle("Sort files").setItems(arrayOf("Date (newest first)","Size (largest first)","Name (A–Z)")){_,i->sortMode=arrayOf("Date","Size","Name")[i];render()}.show()}
+    private fun sortDialog(){AlertDialog.Builder(this).setTitle("Sort files").setItems(arrayOf("Date (newest first)","Size (largest first)","Name (A–Z)")){_,index->sortMode=arrayOf("Date","Size","Name")[index];render()}.show()}
     private fun confirmDelete(){
         val paths=selectedPaths.toList();if(paths.isEmpty()){toast("Select files first");return}
         AlertDialog.Builder(this).setTitle("Delete ${paths.size} files?").setMessage("This permanently deletes the selected files. This cannot be undone.")
-            .setNegativeButton("CANCEL",null).setPositiveButton("DELETE"){_,_->val intent=Intent(this,MemoryTaskService::class.java).setAction(MemoryTaskService.ACTION_DELETE).putStringArrayListExtra(MemoryTaskService.EXTRA_PATHS,ArrayList(paths));startServiceCompat(intent);selectedPaths.clear();status.text="Preparing deletion…"}.show()
+            .setNegativeButton("CANCEL",null).setPositiveButton("DELETE"){_,_->val task=Intent(this,MemoryTaskService::class.java).setAction(MemoryTaskService.ACTION_DELETE).putStringArrayListExtra(MemoryTaskService.EXTRA_PATHS,ArrayList(paths));startServiceCompat(task);selectedPaths.clear();status.text="Preparing deletion…"}.show()
     }
     private fun startTask(action:String){
         if(Build.VERSION.SDK_INT>=30&&!Environment.isExternalStorageManager()){checkStoragePermission();return}
         status.text="Starting…";startServiceCompat(Intent(this,MemoryTaskService::class.java).setAction(action))
     }
-    private fun startServiceCompat(i:Intent){try{if(Build.VERSION.SDK_INT>=26)startForegroundService(i)else startService(i)}catch(e:Exception){toast("Could not start task: ${e.message}")}}
+    private fun startServiceCompat(intent:Intent){try{if(Build.VERSION.SDK_INT>=26)startForegroundService(intent)else startService(intent)}catch(error:Exception){toast("Could not start task: ${error.message}")}}
     private fun render(){
         if(!::content.isInitialized)return
-        content.removeAllViews();val items=visible();val bytes=items.sumOf{it.size}
+        content.removeAllViews();val items=visibleFiles();val bytes=items.sumOf{it.size}
         count.text="${items.size} files • ${formatSize(bytes)}  |  ${selectedPaths.size} selected"
         if(StorageRepository.files.isEmpty()){content.addView(TextView(this).apply{text="No scan results yet.\n\nTap SCAN STORAGE to find supported files. The scan continues in the background and reports progress in your notification.";textSize=15f;setTextColor(Color.LTGRAY);setPadding(dp(12),dp(30),dp(12),dp(30))});return}
         if(items.isEmpty()){content.addView(TextView(this).apply{text="No ${activeCategory.lowercase()} files match this selection.";setTextColor(Color.LTGRAY);setPadding(10,30,10,30)});return}
@@ -187,12 +188,15 @@ class MainActivity:Activity(){
             info.addView(TextView(this).apply{text=file.name;textSize=13f;setTextColor(Color.WHITE);maxLines=2;ellipsize=android.text.TextUtils.TruncateAt.MIDDLE})
             info.addView(TextView(this).apply{text=".${file.extension} • ${formatSize(file.size)} • ${DateFormat.getDateInstance().format(java.util.Date(file.modified))}";textSize=10f;setTextColor(Color.LTGRAY)})
             row.addView(info,LinearLayout.LayoutParams(0,-2,1f))
-            row.addView(CheckBox(this).apply{buttonTintList=android.content.res.ColorStateList.valueOf(Color.rgb(113,238,168));isChecked=file.path in selectedPaths;setOnCheckedChangeListener{_,on->if(on)selectedPaths.add(file.path)else selectedPaths.remove(file.path);count.text="${items.size} files • ${formatSize(bytes)}  |  ${selectedPaths.size} selected"}})
+            row.addView(CheckBox(this).apply{buttonTintList=android.content.res.ColorStateList.valueOf(Color.rgb(113,238,168));isChecked=file.path in selectedPaths;setOnCheckedChangeListener{_,checked->if(checked)selectedPaths.add(file.path)else selectedPaths.remove(file.path);count.text="${items.size} files • ${formatSize(bytes)}  |  ${selectedPaths.size} selected"}})
             row.setOnClickListener{openFile(file)}
             content.addView(row,if(gridMode)LinearLayout.LayoutParams(-1,dp(112)).apply{bottomMargin=dp(6)}else LinearLayout.LayoutParams(-1,dp(66)).apply{bottomMargin=dp(4)})
         }
     }
-    private fun openFile(f:StoredFile){try{val uri=androidx.core.content.FileProvider.getUriForFile(this,"$packageName.provider",File(f.path));val mime=android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension)?:"*/*";startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri,mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))}catch(_:Exception){toast("No compatible viewer found")}}
-    private fun toast(s:String)=Toast.makeText(this,s,Toast.LENGTH_SHORT).show()
+    private fun openFile(file:StoredFile){
+        try{val uri=androidx.core.content.FileProvider.getUriForFile(this,"${packageName}.provider",File(file.path));val mime=android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension)?:"*/*";startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri,mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))}
+        catch(_:Exception){toast("No compatible viewer found")}
+    }
+    private fun toast(message:String)=Toast.makeText(this,message,Toast.LENGTH_SHORT).show()
     override fun onDestroy(){try{unregisterReceiver(receiver)}catch(_:Exception){};super.onDestroy()}
 }
