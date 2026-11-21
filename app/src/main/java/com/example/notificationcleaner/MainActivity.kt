@@ -1,439 +1,198 @@
 package com.example.notificationcleaner
 
-import android.Manifest
-import android.app.Activity
-import android.app.AlertDialog
-import android.app.TimePickerDialog
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.Color
-import android.os.Build
-import android.os.Bundle
+import android.app.*
+import android.content.*
+import android.os.*
 import android.provider.Settings
-import android.view.Gravity
+import android.net.Uri
+import android.view.*
 import android.widget.*
+import androidx.core.app.NotificationCompat
+import java.io.File
+import java.text.DateFormat
+import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
-class MainActivity : Activity() {
+data class StoredFile(val path:String,val name:String,val extension:String,val size:Long,val modified:Long,val category:String)
 
-    private val tiffanyBlue = Color.rgb(10, 186, 181)
-    private val black = Color.BLACK
-    private val white = Color.WHITE
-
-    private lateinit var preferences: android.content.SharedPreferences
-    private lateinit var appContainer: LinearLayout
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-
-        preferences = getSharedPreferences(
-            "cleaner_settings",
-            MODE_PRIVATE
-        )
-
-        if (!preferences.contains("running")) {
-            preferences.edit()
-                .putBoolean("running", true)
-                .apply()
-        }
-
-        createScreen()
-
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(
-                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                100
-            )
-        }
-    }
-
-    private fun createScreen() {
-
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(black)
-            setPadding(30, 40, 30, 20)
-        }
-
-        val title = TextView(this).apply {
-            text = "Notification Cleaner"
-            textSize = 27f
-            gravity = Gravity.CENTER
-            setTextColor(tiffanyBlue)
-        }
-
-        root.addView(title)
-
-        val startStop = Button(this).apply {
-            text = if (isRunning()) "STOP" else "START"
-            setTextColor(black)
-            setBackgroundColor(tiffanyBlue)
-
-            setOnClickListener {
-                val newState = !isRunning()
-
-                preferences.edit()
-                    .putBoolean("running", newState)
-                    .apply()
-
-                text = if (newState) "STOP" else "START"
-
-                NotificationHelper.showStatus(
-                    this@MainActivity,
-                    newState
-                )
-            }
-        }
-
-        root.addView(
-            startStop,
-            LinearLayout.LayoutParams(
-                -1,
-                -2
-            )
-        )
-
-        val accessButton = Button(this).apply {
-            text = "Notification Access"
-            setTextColor(black)
-            setBackgroundColor(tiffanyBlue)
-
-            setOnClickListener {
-                startActivity(
-                    Intent(
-                        Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS
-                    )
-                )
-            }
-        }
-
-        root.addView(accessButton)
-
-        val appsTitle = TextView(this).apply {
-            text = "Select apps to clean"
-            textSize = 20f
-            setTextColor(white)
-            setPadding(0, 25, 0, 15)
-        }
-
-        root.addView(appsTitle)
-
-        appContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-
-        val scroll = ScrollView(this)
-        scroll.addView(appContainer)
-
-        root.addView(
-            scroll,
-            LinearLayout.LayoutParams(
-                -1,
-                0,
-                1f
-            )
-        )
-
-        val footer = TextView(this).apply {
-            text = "App by Potato's man"
-            textSize = 14f
-            gravity = Gravity.CENTER
-            setTextColor(Color.GRAY)
-            setPadding(0, 15, 0, 0)
-        }
-
-        root.addView(footer)
-
-        setContentView(root)
-
-        loadApps()
-    }
-
-   private fun loadApps() {
-
-    appContainer.removeAllViews()
-
-    val pm = packageManager
-
-    val launcherIntent = Intent(
-        Intent.ACTION_MAIN,
-        null
-    ).apply {
-        addCategory(Intent.CATEGORY_LAUNCHER)
-    }
-
-    val apps = pm.queryIntentActivities(
-        launcherIntent,
-        PackageManager.MATCH_ALL
+object StorageRepository {
+    val extensions = linkedMapOf(
+        "Video" to listOf("mp4","mkv","avi","mov","3gp","webm","m4v","mpeg","mpg","ts","wmv","flv"),
+        "Image" to listOf("jpg","jpeg","png","webp","gif","heic","heif","bmp","tif","tiff","dng","raw"),
+        "Document" to listOf("pdf","doc","docx","xls","xlsx","ppt","pptx","txt","rtf","csv","odt","ods","odp","epub"),
+        "Compressed" to listOf("zip","rar","7z","tar","gz","bz2","xz","tgz")
     )
-        .map {
-            it.activityInfo.applicationInfo
-        }
-        .filter {
-            it.packageName != packageName
-        }
-        .distinctBy {
-            it.packageName
-        }
-        .sortedBy {
-            pm.getApplicationLabel(it).toString()
-        }
-
-        for (app in apps) {
-
-            val packageName = app.packageName
-            val appName =
-                pm.getApplicationLabel(app).toString()
-
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 5, 0, 5)
-            }
-
-            val checkBox = CheckBox(this).apply {
-
-                text = appName
-                textSize = 17f
-                setTextColor(white)
-
-                isChecked =
-                    preferences.getBoolean(
-                        "selected_$packageName",
-                        false
-                    )
-
-                setOnCheckedChangeListener { _, checked ->
-
-                    preferences.edit()
-                        .putBoolean(
-                            "selected_$packageName",
-                            checked
-                        )
-                        .apply()
-
-                    if (checked) {
-                        showScheduleDialog(
-                            appName,
-                            packageName
-                        )
-                    }
+    @Volatile var files:List<StoredFile> = emptyList()
+    fun scan(onProgress:(Int,Int,String)->Unit):List<StoredFile> {
+        val found=ArrayList<StoredFile>(); val roots=mutableListOf<File>()
+        roots.add(android.os.Environment.getExternalStorageDirectory())
+        val seen=HashSet<String>(); val stack=ArrayDeque<File>(); roots.filter{it.exists()}.forEach{stack.add(it)}
+        var count=0
+        while(stack.isNotEmpty()){
+            val dir=stack.removeLast(); if(!seen.add(dir.absolutePath))continue
+            val children=try{dir.listFiles()}catch(_:Exception){null}?:continue
+            for(f in children){
+                if(f.isDirectory){stack.add(f)}
+                else if(f.isFile){
+                    count++; val ext=f.extension.lowercase(Locale.ROOT)
+                    val cat=extensions.entries.firstOrNull{ext in it.value}?.key
+                    if(cat!=null)found.add(StoredFile(f.absolutePath,f.name,ext,f.length(),f.lastModified(),cat))
+                    if(count%250==0)onProgress(count,found.size,f.name)
                 }
             }
+        }
+        files=found; onProgress(count,found.size,"Scan complete"); return found
+    }
+    fun delete(paths:List<String>,progress:(Int,Int,String)->Unit):Pair<Int,Long>{
+        var n=0; var bytes=0L
+        paths.forEachIndexed{i,p->val f=File(p);val s=f.length();val ok=try{f.delete()}catch(_:Exception){false};if(ok){n++;bytes+=s};progress(i+1,paths.size,f.name)}
+        files=files.filter{File(it.path).exists()};return n to bytes
+    }
+}
 
-            row.addView(
-                checkBox,
-                LinearLayout.LayoutParams(
-                    0,
-                    -2,
-                    1f
-                )
-            )
+fun formatSize(s:Long):String { if(s<1024)return "$s B"; val u=arrayOf("KB","MB","GB","TB");var v=s.toDouble();var i=-1;do{v/=1024;i++}while(v>=1024&&i<u.lastIndex);return String.format(Locale.getDefault(),"%.1f %s",v,u[i]) }
 
-            val settingsButton = Button(this).apply {
-                text = "⚙"
-                setTextColor(black)
-                setBackgroundColor(tiffanyBlue)
-
-                setOnClickListener {
-                    showScheduleDialog(
-                        appName,
-                        packageName
-                    )
+class MemoryTaskService:Service(){
+    private val executor=Executors.newSingleThreadExecutor()
+    private val cancelled=AtomicBoolean(false)
+    override fun onBind(intent:Intent?)=null
+    override fun onStartCommand(intent:Intent?,flags:Int,startId:Int):Int{
+        when(intent?.action){
+            ACTION_STOP->{cancelled.set(true);stopSelf();return START_NOT_STICKY}
+            ACTION_SCAN->scan()
+            ACTION_DELETE->{
+                val paths=intent.getStringArrayListExtra(EXTRA_PATHS)?:arrayListOf()
+                startForeground(NID,notification("Preparing deletion",0,paths.size,true))
+                executor.execute{
+                    val result=StorageRepository.delete(paths){d,t,name->update("Deleting: $name",d,t)}
+                    update("Deleted ${result.first} files • ${formatSize(result.second)} freed",result.first,paths.size,false)
+                    sendBroadcast(Intent(ACTION_FINISHED).setPackage(packageName));stopSelf()
                 }
             }
-
-            row.addView(settingsButton)
-
-            appContainer.addView(row)
+        }
+        return START_REDELIVER_INTENT
+    }
+    private fun scan(){
+        cancelled.set(false);startForeground(NID,notification("Scanning storage",0,0,true))
+        executor.execute{
+            try{
+                StorageRepository.scan{total,matched,name->if(!cancelled.get())update("Scanned $total files • Found $matched matches",total,0)}
+                update("Scan complete • ${StorageRepository.files.size} supported files",1,1,false)
+            }catch(e:Exception){update("Scan stopped: ${e.message?: "Storage access error"}",0,1,false)}
+            sendBroadcast(Intent(ACTION_FINISHED).setPackage(packageName));stopSelf()
         }
     }
-
-    private fun showScheduleDialog(
-        appName: String,
-        packageName: String
-    ) {
-
-        val options = arrayOf(
-            "Always",
-            "Clock schedule",
-            "Duration"
-        )
-
-        AlertDialog.Builder(this)
-            .setTitle("$appName cleaning")
-            .setItems(options) { _, which ->
-
-                when (which) {
-
-                    0 -> {
-                        saveMode(
-                            packageName,
-                            "always"
-                        )
-                        Toast.makeText(
-                            this,
-                            "Always cleaning $appName",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-
-                    1 -> showClockSchedule(
-                        appName,
-                        packageName
-                    )
-
-                    2 -> showDuration(
-                        appName,
-                        packageName
-                    )
-                }
-            }
-            .show()
+    private fun update(text:String,p:Int,max:Int,ongoing:Boolean=true){
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(NID,notification(text,p,max,ongoing))
+        sendBroadcast(Intent(ACTION_PROGRESS).setPackage(packageName).putExtra("text",text))
     }
-
-    private fun showClockSchedule(
-        appName: String,
-        packageName: String
-    ) {
-
-        TimePickerDialog(
-            this,
-            { _, hour, minute ->
-
-                val start =
-                    String.format(
-                        "%02d:%02d",
-                        hour,
-                        minute
-                    )
-
-                TimePickerDialog(
-                    this,
-                    { _, endHour, endMinute ->
-
-                        val end =
-                            String.format(
-                                "%02d:%02d",
-                                endHour,
-                                endMinute
-                            )
-
-                        preferences.edit()
-                            .putString(
-                                "mode_$packageName",
-                                "clock"
-                            )
-                            .putString(
-                                "start_$packageName",
-                                start
-                            )
-                            .putString(
-                                "end_$packageName",
-                                end
-                            )
-                            .apply()
-
-                        Toast.makeText(
-                            this,
-                            "$appName: $start → $end",
-                            Toast.LENGTH_LONG
-                        ).show()
-
-                    },
-                    7,
-                    0,
-                    true
-                ).show()
-
-            },
-            22,
-            0,
-            true
-        ).show()
+    private fun notification(text:String,p:Int,max:Int,ongoing:Boolean):Notification{
+        val nm=getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        nm.createNotificationChannel(NotificationChannel(CHANNEL,"Storage tasks",NotificationManager.IMPORTANCE_LOW))
+        val open=PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val b=NotificationCompat.Builder(this,CHANNEL).setSmallIcon(android.R.drawable.ic_menu_save).setContentTitle("Memory Cleaner").setContentText(text).setContentIntent(open).setOngoing(ongoing).setOnlyAlertOnce(true).setPriority(NotificationCompat.PRIORITY_LOW)
+        if(max>0)b.setProgress(max,p.coerceAtMost(max),false)
+        if(ongoing){val stop=PendingIntent.getService(this,1,Intent(this,MemoryTaskService::class.java).setAction(ACTION_STOP),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE);b.addAction(android.R.drawable.ic_media_pause,"Stop",stop)}
+        return b.build()
     }
-
-    private fun showDuration(
-        appName: String,
-        packageName: String
-    ) {
-
-        val input = EditText(this)
-
-        input.hint = "Example: 120"
-        input.inputType =
-            android.text.InputType.TYPE_CLASS_NUMBER
-
-        AlertDialog.Builder(this)
-            .setTitle("Duration for $appName")
-            .setMessage(
-                "Enter duration in minutes"
-            )
-            .setView(input)
-            .setPositiveButton("START") { _, _ ->
-
-                val minutes =
-                    input.text.toString().toLongOrNull()
-
-                if (minutes != null && minutes > 0) {
-
-                    val end =
-                        System.currentTimeMillis() +
-                                minutes * 60_000L
-
-                    preferences.edit()
-                        .putString(
-                            "mode_$packageName",
-                            "duration"
-                        )
-                        .putLong(
-                            "duration_end_$packageName",
-                            end
-                        )
-                        .apply()
-
-                    Toast.makeText(
-                        this,
-                        "$appName cleaning for $minutes minutes",
-                        Toast.LENGTH_LONG
-                    ).show()
-
-                } else {
-
-                    Toast.makeText(
-                        this,
-                        "Enter a valid duration",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            }
-            .setNegativeButton(
-                "CANCEL",
-                null
-            )
-            .show()
+    override fun onDestroy(){executor.shutdown();super.onDestroy()}
+    companion object{
+        const val CHANNEL="memory_tasks";const val NID=2201
+        const val ACTION_SCAN="memory.scan";const val ACTION_DELETE="memory.delete";const val ACTION_STOP="memory.stop"
+        const val ACTION_PROGRESS="memory.progress";const val ACTION_FINISHED="memory.finished";const val EXTRA_PATHS="paths"
     }
+}
 
-    private fun saveMode(
-        packageName: String,
-        mode: String
-    ) {
-
-        preferences.edit()
-            .putString(
-                "mode_$packageName",
-                mode
-            )
-            .apply()
+class MainActivity:Activity(){
+    private val selectedExtensions=mutableSetOf<String>();private val selectedPaths=mutableSetOf<String>()
+    private var activeCategory="Video";private var gridMode=true;private var sortMode="Date"
+    private lateinit var content:LinearLayout;private lateinit var status:TextView;private lateinit var count:TextView
+    private val receiver=object:BroadcastReceiver(){override fun onReceive(c:Context?,i:Intent?){when(i?.action){
+        MemoryTaskService.ACTION_PROGRESS->status.text=i.getStringExtra("text")?:"Working…"
+        MemoryTaskService.ACTION_FINISHED->{status.text="Task finished";render()}
+    }}}
+    override fun onCreate(savedInstanceState:Bundle?){super.onCreate(savedInstanceState)
+        window.statusBarColor=Color.rgb(12,15,19);window.navigationBarColor=Color.rgb(12,15,19)
+        val f=IntentFilter().apply{addAction(MemoryTaskService.ACTION_PROGRESS);addAction(MemoryTaskService.ACTION_FINISHED)}
+        if(Build.VERSION.SDK_INT>=33)registerReceiver(receiver,f,RECEIVER_NOT_EXPORTED) else @Suppress("DEPRECATION") registerReceiver(receiver,f)
+        buildUi();checkStoragePermission()
     }
-
-    private fun isRunning(): Boolean {
-
-        return preferences.getBoolean(
-            "running",
-            true
-        )
+    private fun dp(n:Int)=(n*resources.displayMetrics.density).toInt()
+    private fun checkStoragePermission(){
+        if(Build.VERSION.SDK_INT>=30&&!Environment.isExternalStorageManager()){
+            AlertDialog.Builder(this).setTitle("Allow storage access")
+                .setMessage("To scan shared device storage, enable All files access for Memory Cleaner. Android may still protect certain app-private folders.")
+                .setPositiveButton("Open settings"){_,_->try{startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,Uri.parse("package:$packageName")))}catch(_:Exception){startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))}}
+                .setNegativeButton("Later",null).show()
+        }
     }
+    private fun button(label:String,click:()->Unit)=Button(this).apply{text=label;textSize=10f;isAllCaps=false;setTextColor(Color.rgb(12,15,19));setBackgroundColor(Color.rgb(113,238,168));setOnClickListener{click()}}
+    private fun buildUi(){
+        val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(18),dp(20),dp(18),dp(12));setBackgroundColor(Color.rgb(12,15,19))}
+        root.addView(TextView(this).apply{text="MEMORY CLEANER";textSize=23f;setTextColor(Color.rgb(113,238,168));typeface=android.graphics.Typeface.DEFAULT_BOLD})
+        root.addView(TextView(this).apply{text="Find files. Choose what stays. Clear the rest.";textSize=13f;setTextColor(Color.LTGRAY);setPadding(0,dp(5),0,dp(12))})
+        val actions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+        actions.addView(button("SCAN STORAGE"){startTask(MemoryTaskService.ACTION_SCAN)},LinearLayout.LayoutParams(0,dp(48),1f))
+        actions.addView(button("ALL FILE ACCESS"){checkStoragePermission()},LinearLayout.LayoutParams(0,dp(48),1f).apply{leftMargin=dp(8)})
+        root.addView(actions)
+        status=TextView(this).apply{text="Ready to scan";textSize=13f;setTextColor(Color.LTGRAY);setPadding(0,dp(12),0,dp(8))};root.addView(status)
+        count=TextView(this).apply{textSize=14f;setTextColor(Color.WHITE);setPadding(0,0,0,dp(10))};root.addView(count)
+        val cats=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+        StorageRepository.extensions.keys.forEach{cat->cats.addView(button(cat.uppercase()){activeCategory=cat;selectedExtensions.clear();render()},LinearLayout.LayoutParams(0,dp(42),1f).apply{rightMargin=dp(4)})};root.addView(cats)
+        val tools=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+        tools.addView(button("EXTENSIONS"){extensionDialog()},LinearLayout.LayoutParams(0,dp(42),1f))
+        tools.addView(button(if(gridMode)"LIST VIEW" else "THUMBNAILS"){gridMode=!gridMode;render()},LinearLayout.LayoutParams(0,dp(42),1f).apply{leftMargin=dp(5)})
+        tools.addView(button("SORT"){sortDialog()},LinearLayout.LayoutParams(0,dp(42),1f).apply{leftMargin=dp(5)});root.addView(tools)
+        val select=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+        select.addView(button("SELECT ALL"){visible().forEach{selectedPaths.add(it.path)};render()},LinearLayout.LayoutParams(0,dp(42),1f))
+        select.addView(button("CLEAR"){selectedPaths.clear();render()},LinearLayout.LayoutParams(0,dp(42),1f).apply{leftMargin=dp(5)})
+        select.addView(button("DELETE SELECTED"){confirmDelete()},LinearLayout.LayoutParams(0,dp(42),1f).apply{leftMargin=dp(5)});root.addView(select)
+        val scroll=ScrollView(this);content=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};scroll.addView(content)
+        root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f));setContentView(root);render()
+    }
+    private fun visible():List<StoredFile>{
+        val exts=if(selectedExtensions.isEmpty())StorageRepository.extensions[activeCategory].orEmpty().toSet() else selectedExtensions.toSet()
+        val l=StorageRepository.files.filter{it.category==activeCategory&&it.extension in exts}
+        return when(sortMode){"Name"->l.sortedBy{it.name.lowercase(Locale.ROOT)};"Size"->l.sortedByDescending{it.size};else->l.sortedByDescending{it.modified}}
+    }
+    private fun extensionDialog(){
+        val all=StorageRepository.extensions[activeCategory].orEmpty()
+        val checked=BooleanArray(all.size){selectedExtensions.isEmpty()||all[it] in selectedExtensions}
+        AlertDialog.Builder(this).setTitle("$activeCategory extensions").setMultiChoiceItems(all.map{".$it"}.toTypedArray(),checked){_,i,on->if(on)selectedExtensions.add(all[i])else selectedExtensions.remove(all[i])}
+            .setNeutralButton("ALL"){_,_->selectedExtensions.clear();render()}.setPositiveButton("APPLY"){_,_->render()}.setNegativeButton("CANCEL",null).show()
+    }
+    private fun sortDialog(){AlertDialog.Builder(this).setTitle("Sort files").setItems(arrayOf("Date (newest first)","Size (largest first)","Name (A–Z)")){_,i->sortMode=arrayOf("Date","Size","Name")[i];render()}.show()}
+    private fun confirmDelete(){
+        val paths=selectedPaths.toList();if(paths.isEmpty()){toast("Select files first");return}
+        AlertDialog.Builder(this).setTitle("Delete ${paths.size} files?").setMessage("This permanently deletes the selected files. This cannot be undone.")
+            .setNegativeButton("CANCEL",null).setPositiveButton("DELETE"){_,_->val intent=Intent(this,MemoryTaskService::class.java).setAction(MemoryTaskService.ACTION_DELETE).putStringArrayListExtra(MemoryTaskService.EXTRA_PATHS,ArrayList(paths));startServiceCompat(intent);selectedPaths.clear();status.text="Preparing deletion…"}.show()
+    }
+    private fun startTask(action:String){
+        if(Build.VERSION.SDK_INT>=30&&!Environment.isExternalStorageManager()){checkStoragePermission();return}
+        status.text="Starting…";startServiceCompat(Intent(this,MemoryTaskService::class.java).setAction(action))
+    }
+    private fun startServiceCompat(i:Intent){try{if(Build.VERSION.SDK_INT>=26)startForegroundService(i)else startService(i)}catch(e:Exception){toast("Could not start task: ${e.message}")}}
+    private fun render(){
+        if(!::content.isInitialized)return
+        content.removeAllViews();val items=visible();val bytes=items.sumOf{it.size}
+        count.text="${items.size} files • ${formatSize(bytes)}  |  ${selectedPaths.size} selected"
+        if(StorageRepository.files.isEmpty()){content.addView(TextView(this).apply{text="No scan results yet.\n\nTap SCAN STORAGE to find supported files. The scan continues in the background and reports progress in your notification.";textSize=15f;setTextColor(Color.LTGRAY);setPadding(dp(12),dp(30),dp(12),dp(30))});return}
+        if(items.isEmpty()){content.addView(TextView(this).apply{text="No ${activeCategory.lowercase()} files match this selection.";setTextColor(Color.LTGRAY);setPadding(10,30,10,30)});return}
+        items.forEach{file->
+            val row=LinearLayout(this).apply{orientation=if(gridMode)LinearLayout.VERTICAL else LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL;setPadding(dp(8),dp(7),dp(8),dp(7));setBackgroundColor(if(file.path in selectedPaths)Color.rgb(34,58,47)else Color.rgb(24,29,35))}
+            if(gridMode)row.addView(TextView(this).apply{text=when(file.category){"Video"->"▶";"Image"->"▧";"Document"->"▤";else->"▣"};textSize=29f;gravity=Gravity.CENTER;setTextColor(Color.rgb(113,238,168))},LinearLayout.LayoutParams(-1,dp(50)))
+            else row.addView(TextView(this).apply{text="▤";textSize=23f;setTextColor(Color.rgb(113,238,168));gravity=Gravity.CENTER},LinearLayout.LayoutParams(dp(42),dp(48)))
+            val info=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(7),0,dp(5),0)}
+            info.addView(TextView(this).apply{text=file.name;textSize=13f;setTextColor(Color.WHITE);maxLines=2;ellipsize=android.text.TextUtils.TruncateAt.MIDDLE})
+            info.addView(TextView(this).apply{text=".${file.extension} • ${formatSize(file.size)} • ${DateFormat.getDateInstance().format(java.util.Date(file.modified))}";textSize=10f;setTextColor(Color.LTGRAY)})
+            row.addView(info,LinearLayout.LayoutParams(0,-2,1f))
+            row.addView(CheckBox(this).apply{buttonTintList=android.content.res.ColorStateList.valueOf(Color.rgb(113,238,168));isChecked=file.path in selectedPaths;setOnCheckedChangeListener{_,on->if(on)selectedPaths.add(file.path)else selectedPaths.remove(file.path);count.text="${items.size} files • ${formatSize(bytes)}  |  ${selectedPaths.size} selected"}})
+            row.setOnClickListener{openFile(file)}
+            content.addView(row,if(gridMode)LinearLayout.LayoutParams(-1,dp(112)).apply{bottomMargin=dp(6)}else LinearLayout.LayoutParams(-1,dp(66)).apply{bottomMargin=dp(4)})
+        }
+    }
+    private fun openFile(f:StoredFile){try{val uri=androidx.core.content.FileProvider.getUriForFile(this,"$packageName.provider",File(f.path));val mime=android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension)?:"*/*";startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri,mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))}catch(_:Exception){toast("No compatible viewer found")}}
+    private fun toast(s:String)=Toast.makeText(this,s,Toast.LENGTH_SHORT).show()
+    override fun onDestroy(){try{unregisterReceiver(receiver)}catch(_:Exception){};super.onDestroy()}
 }
