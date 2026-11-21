@@ -3,6 +3,10 @@ package com.example.notificationcleaner
 import android.app.*
 import android.content.*
 import android.graphics.Color
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
+import android.media.MediaMetadataRetriever
 import android.graphics.BitmapFactory
 import android.graphics.drawable.GradientDrawable
 import android.media.ThumbnailUtils
@@ -114,22 +118,51 @@ class MainActivity:Activity(){
         }
         return true
     }
-    private fun makeThumbnail(file:StoredFile):android.graphics.Bitmap?{
-        return try{
-            when(file.category){
-                "Image"->{
-                    val bounds=BitmapFactory.Options().apply{inJustDecodeBounds=true}
-                    BitmapFactory.decodeFile(file.path,bounds)
-                    var sample=1
-                    while(bounds.outWidth/sample>480 || bounds.outHeight/sample>480)sample*=2
-                    val opts=BitmapFactory.Options().apply{inSampleSize=sample}
-                    BitmapFactory.decodeFile(file.path,opts)
-                }
-                "Video"->if(Build.VERSION.SDK_INT>=29)ThumbnailUtils.createVideoThumbnail(File(file.path),Size(320,240),null)
-                    else @Suppress("DEPRECATION") ThumbnailUtils.createVideoThumbnail(file.path,android.provider.MediaStore.Images.Thumbnails.MINI_KIND)
-                else->null
+    private fun makeThumbnail(file:StoredFile):android.graphics.Bitmap{
+        try{
+            if(file.category=="Image"){
+                val bounds=BitmapFactory.Options().apply{inJustDecodeBounds=true}
+                BitmapFactory.decodeFile(file.path,bounds)
+                var sample=1
+                while(bounds.outWidth/sample>480 || bounds.outHeight/sample>480)sample*=2
+                BitmapFactory.decodeFile(file.path,BitmapFactory.Options().apply{inSampleSize=sample})?.let{return it}
             }
-        }catch(_:Exception){null}
+            if(file.category=="Video"){
+                val retriever=MediaMetadataRetriever()
+                try{
+                    retriever.setDataSource(file.path)
+                    retriever.getFrameAtTime(1_000_000,MediaMetadataRetriever.OPTION_CLOSEST_SYNC)?.let{return it}
+                }finally{try{retriever.release()}catch(_:Exception){}}
+                if(Build.VERSION.SDK_INT>=29)ThumbnailUtils.createVideoThumbnail(File(file.path),Size(320,240),null)?.let{return it}
+                else @Suppress("DEPRECATION") ThumbnailUtils.createVideoThumbnail(file.path,android.provider.MediaStore.Images.Thumbnails.MINI_KIND)?.let{return it}
+            }
+        }catch(_:Exception){}
+        return makeFileTypeTile(file)
+    }
+    private fun makeFileTypeTile(file:StoredFile):android.graphics.Bitmap{
+        val w=320;val h=240
+        val bitmap=android.graphics.Bitmap.createBitmap(w,h,android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas=Canvas(bitmap)
+        val bg=when(file.category){
+            "Video"->Color.rgb(28,48,58)
+            "Image"->Color.rgb(35,55,45)
+            "Document"->Color.rgb(49,43,62)
+            else->Color.rgb(59,48,34)
+        }
+        val paint=Paint(Paint.ANTI_ALIAS_FLAG)
+        paint.color=bg;canvas.drawRoundRect(RectF(0f,0f,w.toFloat(),h.toFloat()),22f,22f,paint)
+        paint.color=Color.rgb(113,238,168);paint.style=Paint.Style.STROKE;paint.strokeWidth=5f
+        canvas.drawRoundRect(RectF(12f,12f,308f,228f),18f,18f,paint)
+        paint.style=Paint.Style.FILL;paint.textAlign=Paint.Align.CENTER
+        paint.typeface=android.graphics.Typeface.create("sans-serif-condensed",android.graphics.Typeface.BOLD)
+        paint.textSize=68f
+        canvas.drawText(file.extension.uppercase(Locale.ROOT).take(6),160f,128f,paint)
+        paint.textSize=23f;paint.typeface=android.graphics.Typeface.create("sans-serif",android.graphics.Typeface.BOLD)
+        canvas.drawText(file.category.uppercase(Locale.ROOT),160f,174f,paint)
+        paint.textSize=16f;paint.typeface=android.graphics.Typeface.create("sans-serif",android.graphics.Typeface.NORMAL)
+        val shortName=file.name.take(27)
+        canvas.drawText(shortName,160f,204f,paint)
+        return bitmap
     }
     private fun buildUi(){
         val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(18),dp(20),dp(18),dp(12));setBackgroundColor(Color.rgb(12,15,19))}
