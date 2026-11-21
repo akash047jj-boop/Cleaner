@@ -10,6 +10,8 @@ import android.media.MediaMetadataRetriever
 import android.graphics.BitmapFactory
 import android.graphics.Movie
 import android.graphics.ImageDecoder
+import android.graphics.Movie
+import android.graphics.ImageDecoder
 import android.graphics.drawable.GradientDrawable
 import android.media.ThumbnailUtils
 import android.util.Size
@@ -124,11 +126,32 @@ class MainActivity:Activity(){
     private fun makeThumbnail(file:StoredFile):android.graphics.Bitmap{
         try{
             if(file.category=="Image"){
+                if(file.extension=="gif"){
+                    val movie=Movie.decodeFile(file.path)
+                    if(movie!=null){
+                        val w=movie.width().coerceAtLeast(1);val h=movie.height().coerceAtLeast(1)
+                        val scale=minOf(320f/w,240f/h,1f)
+                        val bitmap=android.graphics.Bitmap.createBitmap((w*scale).toInt().coerceAtLeast(1),(h*scale).toInt().coerceAtLeast(1),android.graphics.Bitmap.Config.ARGB_8888)
+                        val canvas=Canvas(bitmap);movie.setTime(0);canvas.drawColor(Color.BLACK);canvas.save();canvas.scale(scale,scale);movie.draw(canvas,0f,0f);canvas.restore()
+                        return bitmap
+                    }
+                }
+                if(Build.VERSION.SDK_INT>=28){
+                    try{
+                        return ImageDecoder.decodeBitmap(ImageDecoder.createSource(File(file.path))){decoder,info,_->
+                            decoder.allocator=ImageDecoder.ALLOCATOR_SOFTWARE
+                            val maxSide=maxOf(info.size.width,info.size.height)
+                            if(maxSide>480){val scale=480f/maxSide;decoder.setTargetSize((info.size.width*scale).toInt().coerceAtLeast(1),(info.size.height*scale).toInt().coerceAtLeast(1))}
+                        }
+                    }catch(_:Exception){}
+                }
                 val bounds=BitmapFactory.Options().apply{inJustDecodeBounds=true}
                 BitmapFactory.decodeFile(file.path,bounds)
-                var sample=1
-                while(bounds.outWidth/sample>480 || bounds.outHeight/sample>480)sample*=2
-                BitmapFactory.decodeFile(file.path,BitmapFactory.Options().apply{inSampleSize=sample})?.let{return it}
+                if(bounds.outWidth>0&&bounds.outHeight>0){
+                    var sample=1
+                    while(bounds.outWidth/sample>480 || bounds.outHeight/sample>480)sample*=2
+                    BitmapFactory.decodeFile(file.path,BitmapFactory.Options().apply{inSampleSize=sample})?.let{return it}
+                }
             }
             if(file.category=="Video"){
                 val retriever=MediaMetadataRetriever()
